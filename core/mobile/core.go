@@ -1028,6 +1028,7 @@ func readMergedConfigRoot(configFile string, patchFile string, finalPatchFile st
 	if err != nil {
 		return nil, fmt.Errorf("read config %s: %w", configFile, err)
 	}
+	var appendRules *yaml.Node
 	if patchFile != "" {
 		patch, patchErr := readYamlMapping(patchFile, false)
 		if patchErr != nil {
@@ -1035,6 +1036,9 @@ func readMergedConfigRoot(configFile string, patchFile string, finalPatchFile st
 		}
 		if patch != nil {
 			mergeMapping(root, patch)
+			if rules := extensionAppendRules(patch); rules != nil {
+				appendRules = rules
+			}
 		}
 	}
 	if finalPatchFile != "" {
@@ -1044,9 +1048,52 @@ func readMergedConfigRoot(configFile string, patchFile string, finalPatchFile st
 		}
 		if patch != nil {
 			mergeMapping(root, patch)
+			if rules := extensionAppendRules(patch); rules != nil {
+				appendRules = rules
+			}
 		}
 	}
+	if appendRules != nil {
+		prependRules(root, appendRules)
+	}
 	return root, nil
+}
+
+// extensionAppendRules returns the extension.append_rules sequence that the
+// app generates, such as the rules that reject TUN connections from apps
+// excluded from the VPN. mergeMapping skips the extension block, so these
+// rules are applied separately.
+func extensionAppendRules(patch *yaml.Node) *yaml.Node {
+	extension := findValue(patch, "extension")
+	if extension == nil || extension.Kind != yaml.MappingNode {
+		return nil
+	}
+	rules := findValue(extension, "append_rules")
+	if rules == nil || rules.Kind != yaml.SequenceNode {
+		return nil
+	}
+	return rules
+}
+
+// prependRules puts the rules before the profile rules, so they are matched
+// before any MATCH rule of the profile.
+func prependRules(root *yaml.Node, extra *yaml.Node) {
+	content := make([]*yaml.Node, 0, len(extra.Content))
+	for _, rule := range extra.Content {
+		if rule.Kind != yaml.ScalarNode || strings.TrimSpace(rule.Value) == "" {
+			continue
+		}
+		content = append(content, cloneNode(rule))
+	}
+	if len(content) == 0 {
+		return
+	}
+	rules := findValue(root, "rules")
+	if rules != nil && rules.Kind == yaml.SequenceNode {
+		rules.Content = append(content, rules.Content...)
+		return
+	}
+	setNode(root, "rules", &yaml.Node{Kind: yaml.SequenceNode, Content: content})
 }
 
 func readYamlMapping(path string, required bool) (*yaml.Node, error) {

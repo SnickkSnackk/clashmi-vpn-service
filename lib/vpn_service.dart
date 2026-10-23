@@ -80,6 +80,14 @@ class VpnServiceConfig {
   bool wake_lock = false;
   bool auto_connect_at_boot = false;
   bool enable_ipv6 = false;
+  // Apple-only routing options; ignored on Android.
+  bool include_all_networks = false;
+  bool exclude_local_networks = false;
+  bool exclude_cellular_services = false;
+  bool exclude_apns = false;
+  bool exclude_device_communication = false;
+  bool enforce_routes = false;
+  bool auto_route_use_sub_ranges_by_default = false;
 
   void fromJson(Map<String, Object?> json) {
     control_port = (json['control_port'] as num?)?.toInt() ?? 0;
@@ -100,6 +108,14 @@ class VpnServiceConfig {
     wake_lock = json['wake_lock'] == true;
     auto_connect_at_boot = json['auto_connect_at_boot'] == true;
     enable_ipv6 = json['enable_ipv6'] == true;
+    include_all_networks = json['include_all_networks'] == true;
+    exclude_local_networks = json['exclude_local_networks'] == true;
+    exclude_cellular_services = json['exclude_cellular_services'] == true;
+    exclude_apns = json['exclude_apns'] == true;
+    exclude_device_communication = json['exclude_device_communication'] == true;
+    enforce_routes = json['enforce_routes'] == true;
+    auto_route_use_sub_ranges_by_default =
+        json['auto_route_use_sub_ranges_by_default'] == true;
   }
 
   Map<String, Object?> toJson() => {
@@ -121,6 +137,14 @@ class VpnServiceConfig {
     'wake_lock': wake_lock,
     'auto_connect_at_boot': auto_connect_at_boot,
     'enable_ipv6': enable_ipv6,
+    'include_all_networks': include_all_networks,
+    'exclude_local_networks': exclude_local_networks,
+    'exclude_cellular_services': exclude_cellular_services,
+    'exclude_apns': exclude_apns,
+    'exclude_device_communication': exclude_device_communication,
+    'enforce_routes': enforce_routes,
+    'auto_route_use_sub_ranges_by_default':
+        auto_route_use_sub_ranges_by_default,
   };
 }
 

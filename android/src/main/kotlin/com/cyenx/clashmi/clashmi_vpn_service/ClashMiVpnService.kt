@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
 import android.net.LinkProperties
@@ -123,6 +124,7 @@ internal class ClashMiVpnService : VpnService() {
             clearErrorFile(config)
             installPersistentCoreLogWriter()
             installSocketProtector()
+            installPackageNameResolver()
             updateAndroidNetworkInfo("core start")
             registerNetworkCallback()
             val fd = openTun(config)
@@ -167,6 +169,7 @@ internal class ClashMiVpnService : VpnService() {
             runCatching { Clashmicore.stop() }.onFailure {
                 lifecycleLog("W", "native cleanup after start failure failed: ${it.message}", it)
             }
+            clearPackageNameResolver()
             clearPersistentCoreLogWriter()
             updateState("disconnected")
             ClashmiVpnRuntime.completeStart(ClashmiVpnRuntime.errorResult(message))
@@ -211,6 +214,7 @@ internal class ClashMiVpnService : VpnService() {
                 lifecycleLog("E", "core stop failed reason=$reason: ${error.message}", error)
             }
         }
+        clearPackageNameResolver()
         clearPersistentCoreLogWriter()
         coreRunning = false
         closeTunFd()
@@ -280,6 +284,8 @@ internal class ClashMiVpnService : VpnService() {
             Log.i(TAG, "ipv6 route disabled by effective config serviceConfig=${config.enableIPv6}")
         }
 
+        applyPerAppRouting(builder, config)
+
         Log.i(
             TAG,
             "own package remains inside vpn route; core outbound sockets are protected individually",
@@ -323,6 +329,54 @@ internal class ClashMiVpnService : VpnService() {
             },
         )
         Log.i(TAG, "socket protector installed")
+    }
+
+    private fun applyPerAppRouting(builder: Builder, config: PreparedVpnConfig) {
+        val perApp = try {
+            PerAppConfig.fromFinalPatchFile(config.corePathPatchFinal, packageName)
+        } catch (error: Throwable) {
+            Log.w(TAG, "read per-app config failed; routing all apps: ${error.message}", error)
+            null
+        }
+        if (perApp == null) {
+            Log.i(TAG, "per-app routing disabled")
+            return
+        }
+        if (perApp.whiteList) {
+            // Keep the app itself inside the VPN route, as without per-app.
+            for (id in perApp.packageIds + packageName) {
+                try {
+                    builder.addAllowedApplication(id)
+                } catch (error: PackageManager.NameNotFoundException) {
+                    Log.w(TAG, "per-app allowed package not installed: $id")
+                }
+            }
+        } else {
+            for (id in perApp.packageIds) {
+                try {
+                    builder.addDisallowedApplication(id)
+                } catch (error: PackageManager.NameNotFoundException) {
+                    Log.w(TAG, "per-app disallowed package not installed: $id")
+                }
+            }
+        }
+        Log.i(
+            TAG,
+            "per-app routing enabled whiteList=${perApp.whiteList} packages=${perApp.packageIds.size}",
+        )
+    }
+
+    private fun installPackageNameResolver() {
+        Clashmicore.setPackageNameResolver(ConnectionOwnerResolver(this))
+        Log.i(TAG, "package name resolver installed")
+    }
+
+    private fun clearPackageNameResolver() {
+        runCatching {
+            Clashmicore.clearPackageNameResolver()
+        }.onFailure {
+            Log.w(TAG, "clear package name resolver failed: ${it.message}", it)
+        }
     }
 
     private fun installPersistentCoreLogWriter() {
