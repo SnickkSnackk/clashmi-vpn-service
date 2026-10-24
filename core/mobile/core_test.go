@@ -1066,3 +1066,18 @@ func TestWriteRuntimeProfileReplacesFile(t *testing.T) {
 		t.Fatalf("temporary files left behind: %v", entries)
 	}
 }
+
+func TestBuildRuntimeConfigProxyModeDisablesTun(t *testing.T) {
+	configFile := writeTempFile(t, "config.yaml", "mixed-port: 7890\ntun:\n  enable: true\n  stack: gvisor\n")
+
+	out, err := buildRuntimeConfig(configFile, "", "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tun := readTunMapping(t, out)
+	assertScalar(t, tun, "enable", "false")
+	if findValue(tun, "file-descriptor") != nil {
+		t.Fatalf("proxy mode runtime config has a tun file descriptor: %s", out)
+	}
+}

@@ -123,6 +123,10 @@ internal class ClashMiVpnService : VpnService() {
             updateState("connecting")
             clearErrorFile(config)
             installPersistentCoreLogWriter()
+            if (!config.tunEnabled) {
+                startProxyCore(config, startId)
+                return
+            }
             installSocketProtector()
             installPackageNameResolver()
             updateAndroidNetworkInfo("core start")
@@ -176,6 +180,31 @@ internal class ClashMiVpnService : VpnService() {
             stopForegroundCompat()
             stopSelfResult(startId)
         }
+    }
+
+    // Runs the core with only its local proxy listeners: no VpnService.Builder
+    // is established, so the system has no VPN network, tun interface or VPN
+    // routes for other apps to detect.
+    private fun startProxyCore(config: PreparedVpnConfig, startId: Int) {
+        lifecycleLog("I", "starting proxy mode without VPN startId=$startId")
+        updateAndroidNetworkInfo("core start")
+        registerNetworkCallback()
+        Clashmicore.startProxy(
+            config.corePath,
+            config.corePathPatch,
+            config.corePathPatchFinal,
+            config.baseDir,
+            config.externalController,
+            config.secret,
+        )
+        coreRunning = true
+        if (!desiredRunning.get()) {
+            lifecycleLog("I", "start completed after stop request; queued stop will clean up startId=$startId")
+            return
+        }
+        lifecycleLog("I", "core started in proxy mode startId=$startId controller=${config.externalController}")
+        updateState("connected")
+        ClashmiVpnRuntime.completeStart(ClashmiVpnRuntime.doneResult())
     }
 
     private fun requestStop(reason: String, startId: Int?) {

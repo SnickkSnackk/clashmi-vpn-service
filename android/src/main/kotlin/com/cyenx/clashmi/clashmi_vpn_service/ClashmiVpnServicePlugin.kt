@@ -166,6 +166,11 @@ class ClashmiVpnServicePlugin :
             }
         }, timeout)
 
+        if (ClashmiVpnRuntime.preparedConfig?.tunEnabled == false) {
+            // Proxy mode establishes no VPN, so it needs no VPN permission.
+            startVpnService()
+            return
+        }
         val permissionIntent = VpnService.prepare(activity ?: context)
         if (permissionIntent != null) {
             val currentActivity = activity

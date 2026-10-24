@@ -97,6 +97,7 @@ func SetAndroidNetworkInfo(raw string) error {
 	return nil
 }
 
+// Start runs the core on the tun fd of the Android VpnService.
 func Start(configFile string, patchFile string, finalPatchFile string, homeDir string, tunFd int, externalController string, secret string) error {
 	mu.Lock()
 	defer mu.Unlock()
@@ -104,7 +105,26 @@ func Start(configFile string, patchFile string, finalPatchFile string, homeDir s
 	if tunFd <= 0 {
 		return errors.New("invalid tun fd")
 	}
-	ownsTunFd := true
+	return startLocked(configFile, patchFile, finalPatchFile, homeDir, tunFd, externalController, secret)
+}
+
+// StartProxy runs the core without a tun: only the local proxy listeners
+// (mixed-port, port, socks-port) and the controller. No VPN is established, so
+// the system has no VPN network, tun interface or VPN routes.
+func StartProxy(configFile string, patchFile string, finalPatchFile string, homeDir string, externalController string, secret string) error {
+	mu.Lock()
+	defer mu.Unlock()
+
+	// VpnService.protect fails while no VPN is established, and without a tun
+	// outbound sockets cannot loop back into the core.
+	dialer.DefaultSocketHook = nil
+	setTailscaleSocketProtector(nil)
+	return startLocked(configFile, patchFile, finalPatchFile, homeDir, 0, externalController, secret)
+}
+
+// startLocked starts the core with the tun fd, or in proxy mode when tunFd is 0.
+func startLocked(configFile string, patchFile string, finalPatchFile string, homeDir string, tunFd int, externalController string, secret string) error {
+	ownsTunFd := tunFd > 0
 	closeOwnedTunFd := func(reason string) {
 		if !ownsTunFd {
 			return
@@ -126,7 +146,7 @@ func Start(configFile string, patchFile string, finalPatchFile string, homeDir s
 	if running {
 		shutdownLocked()
 	}
-	if dialer.DefaultSocketHook == nil {
+	if tunFd > 0 && dialer.DefaultSocketHook == nil {
 		log.Warnln("[ClashMiCore] Android socket protector is not installed; outbound sockets may route back into VPN")
 	}
 
@@ -175,10 +195,20 @@ func Start(configFile string, patchFile string, finalPatchFile string, homeDir s
 		option(cfg)
 	}
 	hub.ApplyConfig(cfg)
-	tunConf := listener.GetTunConf()
-	if !tunConf.Enable {
-		executor.Shutdown()
-		return fmt.Errorf("mihomo TUN listener did not start (stack=%s fd=%d); make sure the Android core supports the requested stack", tunConf.Stack.String(), tunFd)
+	if tunFd > 0 {
+		tunConf := listener.GetTunConf()
+		if !tunConf.Enable {
+			executor.Shutdown()
+			return fmt.Errorf("mihomo TUN listener did not start (stack=%s fd=%d); make sure the Android core supports the requested stack", tunConf.Stack.String(), tunFd)
+		}
+		log.Infoln("[ClashMiCore] started stack=%s fd=%d address=%v", tunConf.Stack.String(), tunConf.FileDescriptor, tunConf.Inet4Address)
+	} else {
+		ports := listener.GetPorts()
+		if ports.MixedPort == 0 && ports.Port == 0 && ports.SocksPort == 0 {
+			executor.Shutdown()
+			return errors.New("no local proxy listener started in proxy mode; set mixed-port, port or socks-port")
+		}
+		log.Infoln("[ClashMiCore] started proxy mode mixed-port=%d port=%d socks-port=%d", ports.MixedPort, ports.Port, ports.SocksPort)
 	}
 
 	statistic.DefaultManager.ResetStatistic()
@@ -186,7 +216,6 @@ func Start(configFile string, patchFile string, finalPatchFile string, homeDir s
 	lastHome = homeDir
 	mergeStartupRuntimeConfigState(cfg.DNS, cfg.General.IPv6, runtimeConfig.injectedDNSPolicyHosts)
 	androidNetworkHealth.start()
-	log.Infoln("[ClashMiCore] started stack=%s fd=%d address=%v", tunConf.Stack.String(), tunConf.FileDescriptor, tunConf.Inet4Address)
 	return nil
 }
 
@@ -664,19 +693,24 @@ func buildRuntimeConfigWithMetadata(configFile string, patchFile string, finalPa
 	}
 
 	tun := ensureMapping(root, "tun")
-	setBool(tun, "enable", true)
-	setInt(tun, "file-descriptor", tunFd)
-	setBool(tun, "auto-route", false)
-	setBool(tun, "auto-detect-interface", false)
-	setInt(tun, "mtu", androidTunMTU)
-	if findValue(tun, "stack") == nil {
-		setScalar(tun, "stack", defaultAndroidTunStack)
-	}
-	if findValue(tun, "dns-hijack") == nil {
-		setSequence(tun, "dns-hijack", []string{"0.0.0.0:53"})
-	}
-	if scalarBool(findValue(root, "ipv6")) && findValue(tun, "inet6-address") == nil {
-		setSequence(tun, "inet6-address", []string{androidTunIPv6Address})
+	if tunFd > 0 {
+		setBool(tun, "enable", true)
+		setInt(tun, "file-descriptor", tunFd)
+		setBool(tun, "auto-route", false)
+		setBool(tun, "auto-detect-interface", false)
+		setInt(tun, "mtu", androidTunMTU)
+		if findValue(tun, "stack") == nil {
+			setScalar(tun, "stack", defaultAndroidTunStack)
+		}
+		if findValue(tun, "dns-hijack") == nil {
+			setSequence(tun, "dns-hijack", []string{"0.0.0.0:53"})
+		}
+		if scalarBool(findValue(root, "ipv6")) && findValue(tun, "inet6-address") == nil {
+			setSequence(tun, "inet6-address", []string{androidTunIPv6Address})
+		}
+	} else {
+		// Proxy mode: mihomo must not create a tun of its own either.
+		setBool(tun, "enable", false)
 	}
 
 	dns := ensureMapping(root, "dns")

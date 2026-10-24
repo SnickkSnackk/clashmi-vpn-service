@@ -14,6 +14,9 @@ internal data class PreparedVpnConfig(
     val controlPort: Int,
     val secret: String,
     val enableIPv6: Boolean,
+    // False when Clash Mi has TUN disabled: the core then runs only the local
+    // proxy and no VPN is established.
+    val tunEnabled: Boolean,
 ) {
     val externalController: String
         get() = if (controlPort > 0) "127.0.0.1:$controlPort" else ""
@@ -48,6 +51,7 @@ internal data class PreparedVpnConfig(
                 controlPort = controlPort,
                 secret = config.stringValue("secret"),
                 enableIPv6 = config.boolValue("enable_ipv6"),
+                tunEnabled = config["prepare"]?.let { config.boolValue("prepare") } ?: true,
             )
         }
 
