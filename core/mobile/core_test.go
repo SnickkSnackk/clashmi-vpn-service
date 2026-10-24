@@ -119,6 +119,17 @@ func TestShouldPersistCoreLogKeepsTailscaleNodeNotFound(t *testing.T) {
 	}
 }
 
+func TestShouldPersistCoreLogKeepsExternalControllerState(t *testing.T) {
+	for _, payload := range []string{
+		"External controller listen error: listen tcp 127.0.0.1:9090: bind: address already in use",
+		"RESTful API listening at: 127.0.0.1:9090",
+	} {
+		if !shouldPersistCoreLog(log.Event{LogLevel: log.INFO, Payload: payload}) {
+			t.Fatalf("controller log %q was dropped from persistent diagnostics", payload)
+		}
+	}
+}
+
 func TestSanitizePersistentCoreLogRedactsSecretsAndFlattensLines(t *testing.T) {
 	got := sanitizePersistentCoreLog("network changed\nauth-key=secret-value token=token-value")
 	if strings.Contains(got, "secret-value") || strings.Contains(got, "token-value") {
@@ -1008,5 +1019,50 @@ func assertSequence(t *testing.T, root *yaml.Node, key string, want []string) {
 		if item.Value != want[i] {
 			t.Fatalf("%s[%d] = %q, want %q", key, i, item.Value, want[i])
 		}
+	}
+}
+
+func TestBuildRuntimeConfigReturnsRuntimeProfilePath(t *testing.T) {
+	configFile := writeTempFile(t, "config.yaml", "mixed-port: 7890\n")
+	patchFile := writeTempFile(t, "patch.yaml", "extension:\n  runtime-profile-save-path: /patch/runtime.yaml\n")
+	finalPatchFile := writeTempFile(t, "final.json", `{"extension": {"runtime-profile-save-path": "/final/runtime.yaml"}}`)
+
+	build, err := buildRuntimeConfigWithMetadata(configFile, patchFile, finalPatchFile, 123)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if build.runtimeProfilePath != "/final/runtime.yaml" {
+		t.Fatalf("runtime profile path = %q, want /final/runtime.yaml", build.runtimeProfilePath)
+	}
+}
+
+func TestWriteRuntimeProfileReplacesFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "service_core_runtime_profile.yaml")
+	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeRuntimeProfile(path, []byte("mixed-port: 7890\n")); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "mixed-port: 7890\n" {
+		t.Fatalf("runtime profile = %q", data)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("runtime profile mode = %v, want 0600", info.Mode().Perm())
+	}
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("temporary files left behind: %v", entries)
 	}
 }

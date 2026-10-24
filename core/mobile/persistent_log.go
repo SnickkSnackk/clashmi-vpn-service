@@ -60,6 +60,11 @@ func shouldPersistCoreLog(event log.Event) bool {
 	if strings.HasPrefix(payload, "[ClashMiCore]") {
 		return true
 	}
+	// Clash Mi talks to the core through the controller, so keep whether it
+	// listens (a port taken by another app makes the proxy list empty).
+	if strings.HasPrefix(payload, "External controller") || strings.HasPrefix(payload, "RESTful API listening") {
+		return true
+	}
 	if !strings.Contains(payload, "[Tailscale]") {
 		return false
 	}

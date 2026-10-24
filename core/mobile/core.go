@@ -136,6 +136,11 @@ func Start(configFile string, patchFile string, finalPatchFile string, homeDir s
 		closeOwnedTunFd("build runtime config failed")
 		return err
 	}
+	if path := runtimeConfig.runtimeProfilePath; path != "" {
+		if err := writeRuntimeProfile(path, runtimeConfig.data); err != nil {
+			log.Warnln("[ClashMiCore] write runtime profile %s failed: %v", path, err)
+		}
+	}
 
 	if err = os.Setenv("SAFE_PATHS", homeDir); err != nil {
 		closeOwnedTunFd("set safe paths failed")
@@ -634,6 +639,14 @@ func protectSocketFD(protector SocketProtector, fd uintptr, network string, addr
 type runtimeConfigBuild struct {
 	data                   []byte
 	injectedDNSPolicyHosts []string
+	runtimeProfilePath     string
+}
+
+// extensionOptions holds the Clash Mi options of the "extension" block, which
+// mergeMapping does not copy into the mihomo config.
+type extensionOptions struct {
+	appendRules        *yaml.Node
+	runtimeProfilePath string
 }
 
 func buildRuntimeConfig(configFile string, patchFile string, finalPatchFile string, tunFd int) ([]byte, error) {
@@ -645,7 +658,7 @@ func buildRuntimeConfig(configFile string, patchFile string, finalPatchFile stri
 }
 
 func buildRuntimeConfigWithMetadata(configFile string, patchFile string, finalPatchFile string, tunFd int) (*runtimeConfigBuild, error) {
-	root, err := readMergedConfigRoot(configFile, patchFile, finalPatchFile)
+	root, extension, err := readMergedConfig(configFile, patchFile, finalPatchFile)
 	if err != nil {
 		return nil, err
 	}
@@ -681,6 +694,7 @@ func buildRuntimeConfigWithMetadata(configFile string, patchFile string, finalPa
 	return &runtimeConfigBuild{
 		data:                   out,
 		injectedDNSPolicyHosts: injectedDNSPolicyHosts,
+		runtimeProfilePath:     extension.runtimeProfilePath,
 	}, nil
 }
 
@@ -1024,39 +1038,76 @@ func scalarBool(node *yaml.Node) bool {
 }
 
 func readMergedConfigRoot(configFile string, patchFile string, finalPatchFile string) (*yaml.Node, error) {
+	root, _, err := readMergedConfig(configFile, patchFile, finalPatchFile)
+	return root, err
+}
+
+func readMergedConfig(configFile string, patchFile string, finalPatchFile string) (*yaml.Node, extensionOptions, error) {
+	var extension extensionOptions
 	root, err := readYamlMapping(configFile, true)
 	if err != nil {
-		return nil, fmt.Errorf("read config %s: %w", configFile, err)
+		return nil, extension, fmt.Errorf("read config %s: %w", configFile, err)
 	}
-	var appendRules *yaml.Node
 	if patchFile != "" {
 		patch, patchErr := readYamlMapping(patchFile, false)
 		if patchErr != nil {
-			return nil, fmt.Errorf("read patch %s: %w", patchFile, patchErr)
+			return nil, extension, fmt.Errorf("read patch %s: %w", patchFile, patchErr)
 		}
 		if patch != nil {
 			mergeMapping(root, patch)
-			if rules := extensionAppendRules(patch); rules != nil {
-				appendRules = rules
-			}
+			extension.update(patch)
 		}
 	}
 	if finalPatchFile != "" {
 		patch, patchErr := readYamlMapping(finalPatchFile, false)
 		if patchErr != nil {
-			return nil, fmt.Errorf("read final patch %s: %w", finalPatchFile, patchErr)
+			return nil, extension, fmt.Errorf("read final patch %s: %w", finalPatchFile, patchErr)
 		}
 		if patch != nil {
 			mergeMapping(root, patch)
-			if rules := extensionAppendRules(patch); rules != nil {
-				appendRules = rules
-			}
+			extension.update(patch)
 		}
 	}
-	if appendRules != nil {
-		prependRules(root, appendRules)
+	if extension.appendRules != nil {
+		prependRules(root, extension.appendRules)
 	}
-	return root, nil
+	return root, extension, nil
+}
+
+// update takes the extension options of a patch; a later patch wins.
+func (e *extensionOptions) update(patch *yaml.Node) {
+	if rules := extensionAppendRules(patch); rules != nil {
+		e.appendRules = rules
+	}
+	extension := findValue(patch, "extension")
+	if extension == nil || extension.Kind != yaml.MappingNode {
+		return
+	}
+	if path := strings.TrimSpace(scalarString(findValue(extension, "runtime-profile-save-path"))); path != "" {
+		e.runtimeProfilePath = path
+	}
+}
+
+// writeRuntimeProfile saves the config the core runs with, which Clash Mi shows
+// as the runtime profile.
+func writeRuntimeProfile(path string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err = tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err = tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err = tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 // extensionAppendRules returns the extension.append_rules sequence that the
